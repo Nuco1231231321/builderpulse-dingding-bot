@@ -1,74 +1,161 @@
-name: BuilderPulse ZH Link -> DingTalk
+name: Archive BuilderPulse ZH + DingTalk
 
 on:
   schedule:
-    - cron: "30 3 * * *" # 北京时间每天 11:30（UTC+8）
+    -  cron: "0 1 * * *" # 每天北京时间 11:30（UTC+8）
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  notify:
+  archive-and-notify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Find latest zh daily and send link
+      - name: Pull latest ZH markdowns (lookback 10 days)
+        run: |
+          python - <<'PY'
+          import os, json, base64, urllib.request, urllib.error
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          UPSTREAM_REPO = "BuilderPulse/BuilderPulse"
+          LOOKBACK_DAYS = 10
+          ARCHIVE_DIR = Path("content/builderpulse/zh")
+          STATE_DIR = Path(".state")
+          CHANGED_JSON = STATE_DIR / "changed_files.json"
+
+          ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+          STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+          def get_upstream_md(path: str):
+              api = f"https://api.github.com/repos/{UPSTREAM_REPO}/contents/{path}"
+              req = urllib.request.Request(api, headers={"User-Agent": "github-actions"})
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      data = json.loads(resp.read().decode("utf-8"))
+              except urllib.error.HTTPError as e:
+                  if e.code == 404:
+                      return None
+                  raise
+
+              content_b64 = data.get("content", "")
+              if not content_b64:
+                  return None
+              text = base64.b64decode(content_b64).decode("utf-8", errors="ignore")
+              return text
+
+          now_cn = datetime.now(timezone(timedelta(hours=8)))
+          changed = []
+
+          # 从旧到新写入，方便阅读历史
+          dates = [now_cn - timedelta(days=i) for i in range(LOOKBACK_DAYS - 1, -1, -1)]
+          for d in dates:
+              ds = d.strftime("%Y-%m-%d")
+              year = d.strftime("%Y")
+              upstream_path = f"zh/{year}/{ds}.md"
+
+              content = get_upstream_md(upstream_path)
+              if content is None:
+                  continue
+
+              normalized = content.rstrip() + "\n"
+              local_path = ARCHIVE_DIR / f"{ds}.md"
+
+              old = None
+              if local_path.exists():
+                  old = local_path.read_text(encoding="utf-8", errors="ignore").rstrip() + "\n"
+
+              if old != normalized:
+                  local_path.write_text(normalized, encoding="utf-8")
+                  changed.append({
+                      "date": ds,
+                      "local_path": str(local_path).replace("\\", "/"),
+                      "upstream_url": f"https://github.com/{UPSTREAM_REPO}/blob/main/{upstream_path}"
+                  })
+
+          CHANGED_JSON.write_text(json.dumps(changed, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(f"Changed files: {len(changed)}")
+          PY
+
+      - name: Commit & push archive updates
+        id: commit
+        run: |
+          if git diff --quiet -- content/builderpulse/zh .state/changed_files.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No archive changes."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add content/builderpulse/zh .state/changed_files.json
+          git commit -m "chore: archive BuilderPulse zh daily markdown"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Notify DingTalk
+        if: steps.commit.outputs.changed == 'true'
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
           DING_KEYWORD: ${{ secrets.DING_KEYWORD }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
           python - <<'PY'
-          import os, json, time, hmac, hashlib, base64
-          import urllib.request, urllib.parse, urllib.error
-          from datetime import datetime, timedelta, timezone
+          import os, json, time, hmac, hashlib, base64, urllib.request, urllib.parse
           from pathlib import Path
-
-          REPO = "BuilderPulse/BuilderPulse"
-          STATE = Path(".state/last_zh_daily_date.txt")
-
-          def find_daily():
-              now_cn = datetime.now(timezone(timedelta(hours=8)))
-              for i in range(0, 3):  # 今天/昨天/前天
-                  d = now_cn - timedelta(days=i)
-                  ds = d.strftime("%Y-%m-%d")
-                  y = d.strftime("%Y")
-                  api = f"https://api.github.com/repos/{REPO}/contents/zh/{y}/{ds}.md"
-                  req = urllib.request.Request(api, headers={"User-Agent": "actions"})
-                  try:
-                      with urllib.request.urlopen(req, timeout=20) as r:
-                          if r.status == 200:
-                              url = f"https://github.com/{REPO}/blob/main/zh/{y}/{ds}.md"
-                              return ds, url
-                  except urllib.error.HTTPError as e:
-                      if e.code == 404:
-                          continue
-                      raise
-              return None, None
 
           webhook = (os.getenv("DING_WEBHOOK") or "").strip()
           if not webhook:
-              raise SystemExit("Missing DING_WEBHOOK")
+              raise SystemExit("Missing DING_WEBHOOK secret")
 
-          ds, url = find_daily()
-          if not url:
-              print("No zh daily found.")
+          changed_path = Path(".state/changed_files.json")
+          if not changed_path.exists():
+              print("No changed_files.json, skip")
               raise SystemExit(0)
 
-          last = STATE.read_text(encoding="utf-8").strip() if STATE.exists() else ""
-          if last == ds:
-              print(f"Already sent: {ds}")
+          changed = json.loads(changed_path.read_text(encoding="utf-8"))
+          if not changed:
+              print("No changed files, skip")
               raise SystemExit(0)
 
+          server = os.getenv("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+          repo = os.getenv("GITHUB_REPOSITORY", "").strip()
+          ref_name = os.getenv("GITHUB_REF_NAME", "main").strip()
+
+          # 最多展示 8 条，防止消息过长
+          show = changed[-8:]
+          lines = []
+          for item in show:
+              date = item["date"]
+              p = item["local_path"]
+              archived_url = f"{server}/{repo}/blob/{ref_name}/{p}"
+              lines.append(f"- {date}：[归档链接]({archived_url})｜[源链接]({item['upstream_url']})")
+
+          if len(changed) > 8:
+              lines.append(f"- 其余 {len(changed)-8} 条已归档到仓库")
+
+          latest = changed[-1]["date"]
           keyword = (os.getenv("DING_KEYWORD") or "").strip()
           prefix = (keyword + "\n") if keyword else ""
+
+          text = (
+              f"{prefix}### BuilderPulse 中文日报归档更新\n\n"
+              f"已同步 **{len(changed)}** 篇（最新：{latest}）\n\n"
+              + "\n".join(lines)
+          )
+
           payload = {
               "msgtype": "markdown",
               "markdown": {
-                  "title": f"BuilderPulse 中文日报 {ds}",
-                  "text": f"{prefix}### BuilderPulse 中文日报 {ds}\n\n- [点击查看日报]({url})"
+                  "title": f"BuilderPulse 归档更新 {latest}",
+                  "text": text
               }
           }
 
@@ -87,19 +174,6 @@ jobs:
               data=json.dumps(payload).encode("utf-8"),
               headers={"Content-Type": "application/json"}
           )
-          with urllib.request.urlopen(req, timeout=20) as r:
-              print("DingTalk:", r.read().decode("utf-8", errors="ignore"))
-
-          STATE.parent.mkdir(parents=True, exist_ok=True)
-          STATE.write_text(ds, encoding="utf-8")
-          print("Saved:", ds)
+          with urllib.request.urlopen(req, timeout=20) as resp:
+              print("DingTalk:", resp.read().decode("utf-8", errors="ignore"))
           PY
-
-      - name: Commit state
-        run: |
-          if git diff --quiet; then exit 0; fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .state/last_zh_daily_date.txt
-          git commit -m "chore: update last zh daily date"
-          git push
