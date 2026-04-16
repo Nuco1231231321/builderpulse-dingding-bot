@@ -2,7 +2,7 @@ name: Archive BuilderPulse ZH + DingTalk
 
 on:
   schedule:
-    - cron: "0 1 * * *" # UTC 01:00 = 北京时间 09:00
+    - cron: "0 1 * * *" # UTC 01:00 = 北京时间每天 09:00
   workflow_dispatch:
 
 permissions:
@@ -51,7 +51,6 @@ jobs:
           now_cn = datetime.now(timezone(timedelta(hours=8)))
           changed = []
 
-          # 从旧到新遍历
           dates = [now_cn - timedelta(days=i) for i in range(LOOKBACK_DAYS - 1, -1, -1)]
           for d in dates:
               ds = d.strftime("%Y-%m-%d")
@@ -84,7 +83,11 @@ jobs:
       - name: Commit & push archive updates
         id: commit
         run: |
-          if git diff --quiet -- content/builderpulse/zh .state/changed_files.json; then
+          # 先 add，确保新文件也能被检测到
+          git add content/builderpulse/zh .state/changed_files.json
+
+          # 用 cached diff 判断（可检测 untracked/new files）
+          if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No archive changes."
             exit 0
@@ -92,9 +95,8 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add content/builderpulse/zh .state/changed_files.json
           git commit -m "chore: archive BuilderPulse zh daily markdown"
-          git push
+          git push origin HEAD:${GITHUB_REF_NAME}
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Notify DingTalk
@@ -182,7 +184,6 @@ jobs:
               data=json.dumps(payload).encode("utf-8"),
               headers={"Content-Type": "application/json"}
           )
-
           with urllib.request.urlopen(req, timeout=20) as resp:
               print("DingTalk:", resp.read().decode("utf-8", errors="ignore"))
           PY
