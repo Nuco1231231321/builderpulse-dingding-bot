@@ -1,21 +1,20 @@
-name: BuilderPulse -> DingTalk
+name: BuilderPulse ZH Link -> DingTalk
 
 on:
   schedule:
-    - cron: "10 1 * * *" # 每天 UTC 01:10 = 北京时间 09:10
+    - cron: "30 3 * * *" # 北京时间每天 11:30（UTC+8）
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  push:
+  notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Read feed and send to DingTalk
+      - name: Find latest zh daily and send link
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
@@ -23,108 +22,84 @@ jobs:
         run: |
           python - <<'PY'
           import os, json, time, hmac, hashlib, base64
-          import urllib.request, urllib.parse
-          import xml.etree.ElementTree as ET
+          import urllib.request, urllib.parse, urllib.error
+          from datetime import datetime, timedelta, timezone
           from pathlib import Path
 
-          FEED_URL = "https://github.com/BuilderPulse/BuilderPulse/commits/main.atom"
-          STATE_FILE = Path(".state/last_id.txt")
+          REPO = "BuilderPulse/BuilderPulse"
+          STATE = Path(".state/last_zh_daily_date.txt")
 
-          if not os.getenv("DING_WEBHOOK"):
-              raise SystemExit("Missing secret: DING_WEBHOOK")
+          def find_daily():
+              now_cn = datetime.now(timezone(timedelta(hours=8)))
+              for i in range(0, 3):  # 今天/昨天/前天
+                  d = now_cn - timedelta(days=i)
+                  ds = d.strftime("%Y-%m-%d")
+                  y = d.strftime("%Y")
+                  api = f"https://api.github.com/repos/{REPO}/contents/zh/{y}/{ds}.md"
+                  req = urllib.request.Request(api, headers={"User-Agent": "actions"})
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as r:
+                          if r.status == 200:
+                              url = f"https://github.com/{REPO}/blob/main/zh/{y}/{ds}.md"
+                              return ds, url
+                  except urllib.error.HTTPError as e:
+                      if e.code == 404:
+                          continue
+                      raise
+              return None, None
 
-          with urllib.request.urlopen(FEED_URL, timeout=30) as resp:
-              xml_data = resp.read()
+          webhook = (os.getenv("DING_WEBHOOK") or "").strip()
+          if not webhook:
+              raise SystemExit("Missing DING_WEBHOOK")
 
-          root = ET.fromstring(xml_data)
-          ns = {"atom": "http://www.w3.org/2005/Atom"}
-
-          entries = []
-          for e in root.findall("atom:entry", ns):
-              entries.append({
-                  "id": (e.findtext("atom:id", default="", namespaces=ns) or "").strip(),
-                  "title": (e.findtext("atom:title", default="", namespaces=ns) or "").strip(),
-                  "updated": (e.findtext("atom:updated", default="", namespaces=ns) or "").strip(),
-                  "link": (e.find("atom:link", ns).attrib.get("href", "") if e.find("atom:link", ns) is not None else "")
-              })
-
-          if not entries:
-              print("No entries in feed.")
+          ds, url = find_daily()
+          if not url:
+              print("No zh daily found.")
               raise SystemExit(0)
 
-          last_id = STATE_FILE.read_text(encoding="utf-8").strip() if STATE_FILE.exists() else ""
-          new_entries = []
-          for item in entries:
-              if last_id and item["id"] == last_id:
-                  break
-              new_entries.append(item)
-
-          if not new_entries:
-              print("No new updates.")
+          last = STATE.read_text(encoding="utf-8").strip() if STATE.exists() else ""
+          if last == ds:
+              print(f"Already sent: {ds}")
               raise SystemExit(0)
-
-          # feed 是新->旧，这里只展示前 8 条
-          show = new_entries[:8]
-          lines = []
-          for it in show:
-              d = it["updated"][:10] if it["updated"] else ""
-              lines.append(f"- [{it['title']}]({it['link']}) {d}")
-          if len(new_entries) > 8:
-              lines.append(f"- 其余 {len(new_entries)-8} 条请点链接查看")
 
           keyword = (os.getenv("DING_KEYWORD") or "").strip()
-          keyword_prefix = (keyword + "\n") if keyword else ""
-
-          text = (
-              f"{keyword_prefix}### BuilderPulse 每日更新\n\n"
-              f"检测到 **{len(new_entries)}** 条新更新：\n\n"
-              + "\n".join(lines) +
-              "\n\n来源：BuilderPulse GitHub commits"
-          )
-
+          prefix = (keyword + "\n") if keyword else ""
           payload = {
               "msgtype": "markdown",
               "markdown": {
-                  "title": "BuilderPulse 每日更新",
-                  "text": text
+                  "title": f"BuilderPulse 中文日报 {ds}",
+                  "text": f"{prefix}### BuilderPulse 中文日报 {ds}\n\n- [点击查看日报]({url})"
               }
           }
 
-          webhook = os.environ["DING_WEBHOOK"].strip()
           secret = (os.getenv("DING_SECRET") or "").strip()
           if secret:
-              timestamp = str(int(time.time() * 1000))
-              sign_str = f"{timestamp}\n{secret}".encode("utf-8")
+              ts = str(int(time.time() * 1000))
+              sign_str = f"{ts}\n{secret}".encode("utf-8")
               sign = urllib.parse.quote_plus(
                   base64.b64encode(hmac.new(secret.encode("utf-8"), sign_str, hashlib.sha256).digest())
               )
               sep = "&" if "?" in webhook else "?"
-              webhook = f"{webhook}{sep}timestamp={timestamp}&sign={sign}"
+              webhook = f"{webhook}{sep}timestamp={ts}&sign={sign}"
 
           req = urllib.request.Request(
               webhook,
               data=json.dumps(payload).encode("utf-8"),
               headers={"Content-Type": "application/json"}
           )
+          with urllib.request.urlopen(req, timeout=20) as r:
+              print("DingTalk:", r.read().decode("utf-8", errors="ignore"))
 
-          with urllib.request.urlopen(req, timeout=30) as resp:
-              body = resp.read().decode("utf-8", errors="ignore")
-              print("DingTalk response:", body)
-
-          # 保存最新ID，避免重复推送
-          STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-          STATE_FILE.write_text(new_entries[0]["id"], encoding="utf-8")
-          print("Saved last_id:", new_entries[0]["id"])
+          STATE.parent.mkdir(parents=True, exist_ok=True)
+          STATE.write_text(ds, encoding="utf-8")
+          print("Saved:", ds)
           PY
 
       - name: Commit state
         run: |
-          if git diff --quiet; then
-            echo "No state change."
-            exit 0
-          fi
+          if git diff --quiet; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .state/last_id.txt
-          git commit -m "chore: update feed state"
+          git add .state/last_zh_daily_date.txt
+          git commit -m "chore: update last zh daily date"
           git push
