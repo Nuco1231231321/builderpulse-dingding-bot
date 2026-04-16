@@ -1,0 +1,130 @@
+name: BuilderPulse -> DingTalk
+
+on:
+  schedule:
+    - cron: "10 1 * * *" # 每天 UTC 01:10 = 北京时间 09:10
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read feed and send to DingTalk
+        env:
+          DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
+          DING_SECRET: ${{ secrets.DING_SECRET }}
+          DING_KEYWORD: ${{ secrets.DING_KEYWORD }}
+        run: |
+          python - <<'PY'
+          import os, json, time, hmac, hashlib, base64
+          import urllib.request, urllib.parse
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          FEED_URL = "https://github.com/BuilderPulse/BuilderPulse/commits/main.atom"
+          STATE_FILE = Path(".state/last_id.txt")
+
+          if not os.getenv("DING_WEBHOOK"):
+              raise SystemExit("Missing secret: DING_WEBHOOK")
+
+          with urllib.request.urlopen(FEED_URL, timeout=30) as resp:
+              xml_data = resp.read()
+
+          root = ET.fromstring(xml_data)
+          ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+          entries = []
+          for e in root.findall("atom:entry", ns):
+              entries.append({
+                  "id": (e.findtext("atom:id", default="", namespaces=ns) or "").strip(),
+                  "title": (e.findtext("atom:title", default="", namespaces=ns) or "").strip(),
+                  "updated": (e.findtext("atom:updated", default="", namespaces=ns) or "").strip(),
+                  "link": (e.find("atom:link", ns).attrib.get("href", "") if e.find("atom:link", ns) is not None else "")
+              })
+
+          if not entries:
+              print("No entries in feed.")
+              raise SystemExit(0)
+
+          last_id = STATE_FILE.read_text(encoding="utf-8").strip() if STATE_FILE.exists() else ""
+          new_entries = []
+          for item in entries:
+              if last_id and item["id"] == last_id:
+                  break
+              new_entries.append(item)
+
+          if not new_entries:
+              print("No new updates.")
+              raise SystemExit(0)
+
+          # feed 是新->旧，这里只展示前 8 条
+          show = new_entries[:8]
+          lines = []
+          for it in show:
+              d = it["updated"][:10] if it["updated"] else ""
+              lines.append(f"- [{it['title']}]({it['link']}) {d}")
+          if len(new_entries) > 8:
+              lines.append(f"- 其余 {len(new_entries)-8} 条请点链接查看")
+
+          keyword = (os.getenv("DING_KEYWORD") or "").strip()
+          keyword_prefix = (keyword + "\n") if keyword else ""
+
+          text = (
+              f"{keyword_prefix}### BuilderPulse 每日更新\n\n"
+              f"检测到 **{len(new_entries)}** 条新更新：\n\n"
+              + "\n".join(lines) +
+              "\n\n来源：BuilderPulse GitHub commits"
+          )
+
+          payload = {
+              "msgtype": "markdown",
+              "markdown": {
+                  "title": "BuilderPulse 每日更新",
+                  "text": text
+              }
+          }
+
+          webhook = os.environ["DING_WEBHOOK"].strip()
+          secret = (os.getenv("DING_SECRET") or "").strip()
+          if secret:
+              timestamp = str(int(time.time() * 1000))
+              sign_str = f"{timestamp}\n{secret}".encode("utf-8")
+              sign = urllib.parse.quote_plus(
+                  base64.b64encode(hmac.new(secret.encode("utf-8"), sign_str, hashlib.sha256).digest())
+              )
+              sep = "&" if "?" in webhook else "?"
+              webhook = f"{webhook}{sep}timestamp={timestamp}&sign={sign}"
+
+          req = urllib.request.Request(
+              webhook,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"}
+          )
+
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              body = resp.read().decode("utf-8", errors="ignore")
+              print("DingTalk response:", body)
+
+          # 保存最新ID，避免重复推送
+          STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+          STATE_FILE.write_text(new_entries[0]["id"], encoding="utf-8")
+          print("Saved last_id:", new_entries[0]["id"])
+          PY
+
+      - name: Commit state
+        run: |
+          if git diff --quiet; then
+            echo "No state change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .state/last_id.txt
+          git commit -m "chore: update feed state"
+          git push
