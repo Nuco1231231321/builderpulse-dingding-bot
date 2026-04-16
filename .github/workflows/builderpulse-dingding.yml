@@ -2,7 +2,7 @@ name: Archive BuilderPulse ZH + DingTalk
 
 on:
   schedule:
-    -  cron: "0 1 * * *" # 每天北京时间 11:30（UTC+8）
+    - cron: "0 1 * * *" # UTC 01:00 = 北京时间 09:00
   workflow_dispatch:
 
 permissions:
@@ -11,6 +11,7 @@ permissions:
 jobs:
   archive-and-notify:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,7 +19,7 @@ jobs:
       - name: Pull latest ZH markdowns (lookback 10 days)
         run: |
           python - <<'PY'
-          import os, json, base64, urllib.request, urllib.error
+          import json, base64, urllib.request, urllib.error
           from datetime import datetime, timedelta, timezone
           from pathlib import Path
 
@@ -45,13 +46,12 @@ jobs:
               content_b64 = data.get("content", "")
               if not content_b64:
                   return None
-              text = base64.b64decode(content_b64).decode("utf-8", errors="ignore")
-              return text
+              return base64.b64decode(content_b64).decode("utf-8", errors="ignore")
 
           now_cn = datetime.now(timezone(timedelta(hours=8)))
           changed = []
 
-          # 从旧到新写入，方便阅读历史
+          # 从旧到新遍历
           dates = [now_cn - timedelta(days=i) for i in range(LOOKBACK_DAYS - 1, -1, -1)]
           for d in dates:
               ds = d.strftime("%Y-%m-%d")
@@ -98,7 +98,7 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Notify DingTalk
-        if: steps.commit.outputs.changed == 'true'
+        if: steps.commit.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
@@ -106,6 +106,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           python - <<'PY'
           import os, json, time, hmac, hashlib, base64, urllib.request, urllib.parse
@@ -116,46 +117,53 @@ jobs:
               raise SystemExit("Missing DING_WEBHOOK secret")
 
           changed_path = Path(".state/changed_files.json")
-          if not changed_path.exists():
-              print("No changed_files.json, skip")
-              raise SystemExit(0)
+          changed = []
+          if changed_path.exists():
+              changed = json.loads(changed_path.read_text(encoding="utf-8"))
 
-          changed = json.loads(changed_path.read_text(encoding="utf-8"))
-          if not changed:
-              print("No changed files, skip")
-              raise SystemExit(0)
+          manual_run = (os.getenv("EVENT_NAME") == "workflow_dispatch")
 
           server = os.getenv("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
           repo = os.getenv("GITHUB_REPOSITORY", "").strip()
           ref_name = os.getenv("GITHUB_REF_NAME", "main").strip()
 
-          # 最多展示 8 条，防止消息过长
-          show = changed[-8:]
           lines = []
-          for item in show:
-              date = item["date"]
-              p = item["local_path"]
-              archived_url = f"{server}/{repo}/blob/{ref_name}/{p}"
-              lines.append(f"- {date}：[归档链接]({archived_url})｜[源链接]({item['upstream_url']})")
+          title = "BuilderPulse 中文日报归档通知"
 
-          if len(changed) > 8:
-              lines.append(f"- 其余 {len(changed)-8} 条已归档到仓库")
+          if changed:
+              show = changed[-8:]
+              for item in show:
+                  archived_url = f"{server}/{repo}/blob/{ref_name}/{item['local_path']}"
+                  lines.append(f"- {item['date']}：[归档链接]({archived_url})｜[源链接]({item['upstream_url']})")
+              if len(changed) > 8:
+                  lines.append(f"- 其余 {len(changed)-8} 条已归档到仓库")
+              header = f"已同步 **{len(changed)}** 篇"
+          else:
+              if not manual_run:
+                  print("No changes and not manual run, skip notify.")
+                  raise SystemExit(0)
 
-          latest = changed[-1]["date"]
+              files = sorted(Path("content/builderpulse/zh").glob("*.md"))
+              if files:
+                  latest = files[-1]
+                  date = latest.stem
+                  y = date[:4]
+                  local_path = str(latest).replace("\\", "/")
+                  archived_url = f"{server}/{repo}/blob/{ref_name}/{local_path}"
+                  upstream_url = f"https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/{y}/{date}.md"
+                  lines.append(f"- 最新归档：[归档链接]({archived_url})｜[源链接]({upstream_url})")
+                  header = f"手动触发：今日无新增，发送最近一期（{date}）"
+              else:
+                  header = "手动触发：当前仓库还没有归档文件"
+
           keyword = (os.getenv("DING_KEYWORD") or "").strip()
           prefix = (keyword + "\n") if keyword else ""
-
-          text = (
-              f"{prefix}### BuilderPulse 中文日报归档更新\n\n"
-              f"已同步 **{len(changed)}** 篇（最新：{latest}）\n\n"
-              + "\n".join(lines)
-          )
 
           payload = {
               "msgtype": "markdown",
               "markdown": {
-                  "title": f"BuilderPulse 归档更新 {latest}",
-                  "text": text
+                  "title": title,
+                  "text": f"{prefix}### {title}\n\n{header}\n\n" + ("\n".join(lines) if lines else "")
               }
           }
 
@@ -174,6 +182,7 @@ jobs:
               data=json.dumps(payload).encode("utf-8"),
               headers={"Content-Type": "application/json"}
           )
+
           with urllib.request.urlopen(req, timeout=20) as resp:
               print("DingTalk:", resp.read().decode("utf-8", errors="ignore"))
           PY
