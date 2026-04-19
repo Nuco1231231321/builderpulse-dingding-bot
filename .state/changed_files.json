@@ -1,12 +1,12 @@
 [
   {
-    "date": "2026-04-17",
-    "local_path": "content/builderpulse/zh/2026-04-17.md",
-    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-04-17.md"
-  },
-  {
     "date": "2026-04-18",
     "local_path": "content/builderpulse/zh/2026-04-18.md",
     "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-04-18.md"
+  },
+  {
+    "date": "2026-04-19",
+    "local_path": "content/builderpulse/zh/2026-04-19.md",
+    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-04-19.md"
   }
 ]
