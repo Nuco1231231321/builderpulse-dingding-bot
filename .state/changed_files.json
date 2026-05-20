@@ -1,7 +1,17 @@
 [
   {
-    "date": "2026-05-17",
-    "local_path": "content/builderpulse/zh/2026-05-17.md",
-    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-05-17.md"
+    "date": "2026-05-18",
+    "local_path": "content/builderpulse/zh/2026-05-18.md",
+    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-05-18.md"
+  },
+  {
+    "date": "2026-05-19",
+    "local_path": "content/builderpulse/zh/2026-05-19.md",
+    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-05-19.md"
+  },
+  {
+    "date": "2026-05-20",
+    "local_path": "content/builderpulse/zh/2026-05-20.md",
+    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-05-20.md"
   }
 ]
