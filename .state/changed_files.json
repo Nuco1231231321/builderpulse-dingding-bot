@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "date": "2026-08-06",
+    "local_path": "content/builderpulse/zh/2026-08-06.md",
+    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-08-06.md"
+  },
+  {
+    "date": "2026-08-07",
+    "local_path": "content/builderpulse/zh/2026-08-07.md",
+    "upstream_url": "https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/2026/2026-08-07.md"
+  }
+]
